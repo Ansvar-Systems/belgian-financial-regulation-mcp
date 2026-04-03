@@ -1,33 +1,37 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "eu.ansvar/belgian-financial-regulation-mcp",
-  "description": "Query FSMA and NBB circulaires, communications, guidance, and enforcement actions (Belgian financial regulation)",
+  "description": "Belgian financial regulation MCP server — FSMA circulaires, NBB circulaires, enforcement actions, and sourcebook lookup",
   "repository": {
     "url": "https://github.com/Ansvar-Systems/belgian-financial-regulation-mcp",
     "source": "github"
   },
   "homepage": "https://ansvar.eu",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "license": "Apache-2.0",
   "keywords": [
-    "fsma",
-    "nbb",
-    "belgian-financial-regulation",
+    "financial regulation",
     "belgium",
-    "financial-services",
+    "regulation",
     "compliance",
-    "enforcement",
-    "circulaires",
-    "mcp",
-    "ansvar"
+    "mcp"
   ],
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@ansvar/belgian-financial-regulation-mcp",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
+      }
+    },
+    {
+      "registryType": "npm",
+      "identifier": "@ansvar/belgian-financial-regulation-mcp",
+      "version": "1.0.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://mcp.ansvar.eu/belgian-financial-regulation/mcp"
       }
     }
   ]
