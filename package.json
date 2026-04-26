@@ -2,7 +2,7 @@
   "name": "@ansvar/belgian-financial-regulation-mcp",
   "version": "0.1.0",
   "mcpName": "eu.ansvar/belgian-financial-regulation-mcp",
-  "description": "Belgian financial regulation MCP server — FSMA circulaires, NBB circulaires, enforcement actions, and sourcebook lookup",
+  "description": "Belgian financial regulation MCP server \u2014 FSMA circulaires, NBB circulaires, enforcement actions, and sourcebook lookup",
   "type": "module",
   "main": "dist/src/index.js",
   "bin": {
@@ -45,7 +45,8 @@
     "seed": "npx tsx scripts/seed-sample.ts",
     "ingest": "npx tsx scripts/ingest-fsma.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:contract": "echo \"No contract tests yet\" && exit 0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
