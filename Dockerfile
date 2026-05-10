@@ -31,7 +31,9 @@ RUN addgroup -g 1001 -S nodejs \
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
 COPY --chown=nodejs:nodejs package.json ./
-# (no DB embedded — premium-mounted or stub MCP)
+# DB shipped as Release asset, gunzipped by Provision step into data/database.db,
+# then renamed at COPY time to the runtime filename.
+COPY --chown=nodejs:nodejs data/database.db data/fsma.db
 
 USER nodejs
 

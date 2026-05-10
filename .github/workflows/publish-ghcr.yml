@@ -1,77 +1,163 @@
 # =============================================================================
-# Publish GHCR Image — Build, push, and scan container image
+# MCP GHCR Build — Build Docker image and push to GitHub Container Registry
 # =============================================================================
 #
-# Triggered on push to main when source, data, or Dockerfile changes.
-# Builds and pushes to GHCR, then runs Trivy image scan (post-merge audit).
+# Triggered on push to main or dev, and on manual dispatch.
+# - main: pushes :latest and :sha-XXXXXXX tags
+# - dev:  pushes :dev and :sha-XXXXXXX tags
 #
-# GHCR auth uses GitHub's built-in GITHUB_TOKEN — no additional secrets needed.
+# Watchtower on the Hetzner prod server polls GHCR every 1h and
+# automatically restarts containers when a new :latest image is detected.
+# This workflow also kicks Watchtower's HTTP API after a successful main build
+# to swap prod within seconds (gated on WATCHTOWER_HTTP_API_TOKEN secret).
 #
-# Trivy scans the just-built image for CRITICAL and HIGH CVEs.
-# Results are uploaded to the GitHub Security tab as SARIF.
-# This is a post-merge audit trail, not a merge gate (see spec §5.1.1).
+# DATABASE PROVISIONING:
+# If the Dockerfile COPYs a .db file and that file is missing, empty, or an
+# LFS pointer after checkout, this workflow downloads database.db.gz from the
+# repo's latest GitHub Release. This handles two failure modes:
+#   1. Repos using Git LFS where the runner lacks LFS (fallback to release)
+#   2. Repos with data/*.db in .gitignore (placeholder only, real DB in release)
 #
 # =============================================================================
 
 name: Publish GHCR Image
+
 on:
   push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'data/**'
-      - 'package.json'
-      - 'Dockerfile'
+    branches: [main, dev]
   workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME: belgian-financial-regulation-mcp
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push:
+    name: Build and Push
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
 
-      - name: Set image name from package.json
-        id: meta
+      - name: Provision database
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          NAME=$(node -e "console.log(require('./package.json').name.replace('@ansvar/', ''))")
-          VERSION=$(node -e "console.log(require('./package.json').version)")
-          echo "image_name=${NAME}" >> $GITHUB_OUTPUT
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          # Check if Dockerfile copies any .db file
+          DB_FILES=$(grep -oP 'COPY\s+(--\S+\s+)*\K(data/\S+\.db)' Dockerfile 2>/dev/null || true)
+          if [ -z "$DB_FILES" ]; then
+            echo "No .db files in Dockerfile COPY, skipping"
+            exit 0
+          fi
 
-      - name: Log in to GHCR
+          for DB_FILE in $DB_FILES; do
+            if [ -f "$DB_FILE" ] && [ "$(wc -c < "$DB_FILE")" -gt 1024 ]; then
+              echo "OK: $DB_FILE is valid ($(du -sh "$DB_FILE" | cut -f1))"
+              continue
+            fi
+
+            # Detect LFS pointer or empty file
+            if [ -f "$DB_FILE" ]; then
+              if head -1 "$DB_FILE" 2>/dev/null | grep -q 'version https://git-lfs'; then
+                echo "WARN: $DB_FILE is an LFS pointer, not actual data"
+              else
+                echo "WARN: $DB_FILE exists but is empty or too small ($(wc -c < "$DB_FILE") bytes)"
+              fi
+            else
+              echo "WARN: $DB_FILE does not exist"
+            fi
+
+            # Download from GitHub Releases
+            TAG=$(gh release view --json tagName -q '.tagName' 2>/dev/null) || true
+            if [ -z "$TAG" ]; then
+              echo "ERROR: $DB_FILE invalid and no GitHub Release available"
+              exit 1
+            fi
+
+            echo "Downloading database.db.gz from release $TAG..."
+            mkdir -p data
+            if gh release download "$TAG" -p "database.db.gz" -D data/ 2>/dev/null; then
+              gunzip -f data/database.db.gz
+              echo "OK: Downloaded $(du -sh data/database.db | cut -f1) from release $TAG"
+            else
+              echo "ERROR: Could not download database.db.gz from release $TAG"
+              exit 1
+            fi
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/ansvar-systems/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/ansvar-systems/${{ steps.meta.outputs.image_name }}:latest
-            ${{ env.REGISTRY }}/ansvar-systems/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Trivy image scan
+        if: github.ref == 'refs/heads/main'
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/ansvar-systems/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ env.REGISTRY }}/ansvar-systems/${{ env.IMAGE_NAME }}:latest
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
 
       - name: Upload Trivy results to Security tab
+        if: github.ref == 'refs/heads/main'
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        continue-on-error: true
         with:
           sarif_file: trivy-results.sarif
+
+      - name: Kick Watchtower
+        if: github.ref == 'refs/heads/main' && env.WATCHTOWER_TOKEN != ''
+        env:
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_HTTP_API_TOKEN }}
+        run: |
+          curl -sS -m 60 -X POST https://watchtower.ansvar.eu/v1/update \
+            -H "Authorization: Bearer ${WATCHTOWER_TOKEN}" || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## GHCR Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ env.REGISTRY }}/ansvar-systems/${{ env.IMAGE_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
